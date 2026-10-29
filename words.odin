@@ -18,8 +18,13 @@ Text_Edit :: struct {
 /*
 tokenize_words splits `text` into tokens for diff_words. A token is a run of
 letters, digits and underscores, a run of whitespace, or any other single
-character. Joining the tokens gives back `text`. Invalid UTF-8 bytes become
-single-byte tokens.
+character. Joining the tokens gives back `text`.
+
+The text is read as grapheme clusters, the characters a reader sees, so a
+token never splits one: a combining accent stays with its letter, and an emoji
+built from several code points, such as a flag or a family joined with
+zero-width joiners, is one token. A cluster takes its class from its first
+code point. An invalid UTF-8 byte starts a token of its own.
 
 Inputs:
 - text: the text to split.
@@ -35,22 +40,22 @@ tokenize_words :: proc(text: string, allocator := context.allocator) -> (tokens:
 	defer if err != nil {
 		delete(out)
 	}
-	i := 0
-	for i < len(text) {
-		r, size := utf8.decode_rune_in_string(text[i:])
-		class := rune_class(r)
-		j := i + size
-		if class != .Other {
-			for j < len(text) {
-				r2, size2 := utf8.decode_rune_in_string(text[j:])
-				if rune_class(r2) != class {
-					break
-				}
-				j += size2
-			}
+	start := 0
+	class := Rune_Class.Other
+	it := utf8.decode_grapheme_iterator_make(text)
+	for cluster, g in utf8.decode_grapheme_iterate(&it) {
+		r, _ := utf8.decode_rune_in_string(cluster)
+		next_class := rune_class(r)
+		// Words and spaces grow until the class changes; anything else is
+		// one cluster per token.
+		if g.byte_index > start && (next_class != class || class == .Other) {
+			append(&out, text[start:g.byte_index]) or_return
+			start = g.byte_index
 		}
-		append(&out, text[i:j]) or_return
-		i = j
+		class = next_class
+	}
+	if start < len(text) {
+		append(&out, text[start:]) or_return
 	}
 	shrink(&out) or_return
 	return out[:], nil

@@ -2,6 +2,7 @@ package diff_tests
 
 import diff ".."
 import "core:mem"
+import "core:slice"
 import "core:strings"
 import "core:testing"
 
@@ -199,4 +200,34 @@ test_diff_words_survives_allocation_failures :: proc(t: ^testing.T) {
 		return
 	}
 	testing.expect(t, false, "diff_words never succeeded")
+}
+
+@(test)
+test_tokenize_words_keeps_grapheme_clusters_whole :: proc(t: ^testing.T) {
+	tr: mem.Tracking_Allocator
+	context.allocator = track_begin(&tr)
+	defer expect_no_leaks(t, &tr)
+
+	// A decomposed "é", a family emoji joined with ZWJ, and a flag.
+	text := "café \U0001F468‍\U0001F469‍\U0001F467\U0001F1EB\U0001F1F7!"
+	tokens, err := diff.tokenize_words(text)
+	defer delete(tokens)
+	testing.expect_value(t, err, nil)
+	want := []string{"café", " ", "\U0001F468‍\U0001F469‍\U0001F467", "\U0001F1EB\U0001F1F7", "!"}
+	testing.expectf(t, slice.equal(tokens, want), "got %q", tokens)
+}
+
+@(test)
+test_diff_words_never_splits_a_combining_mark :: proc(t: ^testing.T) {
+	tr: mem.Tracking_Allocator
+	context.allocator = track_begin(&tr)
+	defer expect_no_leaks(t, &tr)
+
+	edits, err := diff.diff_words("café noir", "cafe noir")
+	defer delete(edits)
+	testing.expect_value(t, err, nil)
+	inline, format_err := diff.format_word_diff(edits)
+	defer delete(inline)
+	testing.expect_value(t, format_err, nil)
+	testing.expect_value(t, inline, "[-café-]{+cafe+} noir")
 }
