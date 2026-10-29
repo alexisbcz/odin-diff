@@ -6,6 +6,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-29
+
+### Fixed
+
+- `parse_patch` no longer reserves memory from the hunk header counts alone. A short patch that claimed millions of lines made it reserve gigabytes.
+- `parse_patch` returns `Malformed_Hunk_Line` when `+`, `-` or space lines follow a hunk past the line counts in its header. Before, it dropped those lines and the patch applied only in part.
+- `apply_patch` checks a `Patch` built by hand: a hunk whose lines disagree with its counts returns `Malformed_Hunk_Line`, and huge starts or counts return an error. Before, both could panic.
+- `unified` and `hunks` with `max(int)` lines of context give one hunk. Before, `2 * context` overflowed and gave overlapping hunks that `apply` rejected.
+- `unified_from_edits` returns `Edits_Out_Of_Range` for edit counts so large that adding them overflows. Before, it panicked.
+- `tokenize_words` and `diff_words` keep grapheme clusters whole. A combining accent no longer splits from its letter, and emoji made of several code points stay one token.
+
 ## [0.1.0] - 2026-10-29
 
 ### Added
@@ -19,5 +30,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - `Error` union with `Diff_Error`, `Unified_Error`, `Patch_Error` and allocator errors.
 - A runnable example under `examples/basic`.
 
-[Unreleased]: https://github.com/alexisbcz/odin-diff/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/alexisbcz/odin-diff/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/alexisbcz/odin-diff/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/alexisbcz/odin-diff/releases/tag/v0.1.0
