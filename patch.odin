@@ -9,7 +9,10 @@ Patch_Error :: enum {
 	None,
 	// A line starting with `@@` is not a valid `@@ -a,b +c,d @@` header.
 	Malformed_Hunk_Header,
-	// A hunk body line starts with a character other than ' ', '-', '+' or '\'.
+	/*
+	A hunk body line starts with a character other than ' ', '-', '+' or '\',
+	or the hunk has more or fewer lines than its header promises.
+	*/
 	Malformed_Hunk_Line,
 	// The patch ended before a hunk had as many lines as its header promised.
 	Truncated_Hunk,
@@ -137,8 +140,10 @@ Inputs:
 
 Returns:
 - result: the patched text, owned by the caller; free with `delete(result, allocator)`.
-- err: `.Hunk_Out_Of_Order`, `.Hunk_Out_Of_Range`, `.Context_Mismatch`, or an
-  allocator error. On error nothing needs freeing.
+- err: `.Hunk_Out_Of_Order`, `.Hunk_Out_Of_Range`, `.Context_Mismatch`,
+  `.Malformed_Hunk_Line` when a hunk's lines disagree with its counts, or an
+  allocator error. On error nothing needs freeing. Bad input, including a
+  Patch built by hand, never panics.
 */
 apply_patch :: proc(original: string, p: Patch, allocator := context.allocator) -> (result: string, err: Error) {
 	lines := split_lines(original, allocator) or_return
@@ -154,7 +159,22 @@ apply_patch :: proc(original: string, p: Patch, allocator := context.allocator) 
 		if h.a_start < pos {
 			return "", .Hunk_Out_Of_Order
 		}
-		if h.a_start + h.a_count > len(lines) {
+		// A Patch can be built by hand, so check that the lines agree with
+		// the counts before trusting either. Comparing against the room left
+		// keeps huge values from overflowing.
+		a_lines, b_lines := 0, 0
+		for pl in h.lines {
+			if pl.op != .Insert {
+				a_lines += 1
+			}
+			if pl.op != .Delete {
+				b_lines += 1
+			}
+		}
+		if a_lines != h.a_count || b_lines != h.b_count {
+			return "", .Malformed_Hunk_Line
+		}
+		if h.a_start > len(lines) || h.a_count > len(lines) - h.a_start {
 			return "", .Hunk_Out_Of_Range
 		}
 		for line in lines[pos:h.a_start] {
@@ -251,7 +271,10 @@ parse_hunk :: proc(header: string, rest: ^string, allocator: runtime.Allocator) 
 	h.a_start = a_count == 0 ? a_line : a_line - 1
 	h.b_start = b_count == 0 ? b_line : b_line - 1
 
-	out := make([dynamic]Patch_Line, 0, a_count + b_count, allocator) or_return
+	// Every body line takes at least one byte, so the rest of the text caps
+	// the reservation. Trusting the header would let a tiny patch claiming
+	// huge counts reserve gigabytes.
+	out := make([dynamic]Patch_Line, 0, min(a_count + b_count, len(rest^)), allocator) or_return
 	defer if err != nil {
 		delete(out)
 	}
@@ -297,6 +320,19 @@ parse_hunk :: proc(header: string, rest: ^string, allocator: runtime.Allocator) 
 	if strings.has_prefix(rest^, "\\") {
 		next_line(rest)
 		mark_no_newline(out[:])
+	}
+	// A body line right after the hunk means the header undercounts it.
+	// Ignoring it would silently drop part of the change. A `---` line
+	// starts the next file and the `-- ` line is a mail signature, as
+	// written by `git format-patch`.
+	peek := rest^
+	if next := strip_eol(next_line(&peek)); len(next) > 0 {
+		switch next[0] {
+		case ' ', '+', '-':
+			if next != "-- " && !strings.has_prefix(next, "--- ") {
+				return {}, .Malformed_Hunk_Line
+			}
+		}
 	}
 	shrink(&out) or_return
 	h.lines = out[:]

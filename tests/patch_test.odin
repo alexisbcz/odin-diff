@@ -296,3 +296,73 @@ test_patch_and_unified_survive_allocation_failures :: proc(t: ^testing.T) {
 	}
 	testing.expect(t, unified_ok && apply_ok, "never succeeded within the allocation budget")
 }
+
+@(test)
+test_parse_patch_does_not_trust_huge_hunk_counts :: proc(t: ^testing.T) {
+	tr: mem.Tracking_Allocator
+	context.allocator = track_begin(&tr)
+	defer expect_no_leaks(t, &tr)
+
+	// A 40-byte patch must not make the parser reserve gigabytes up front.
+	_, err := diff.apply("a\n", "@@ -1,100000000 +1,100000000 @@\n a\n")
+	testing.expect_value(t, err, diff.Patch_Error.Truncated_Hunk)
+	testing.expectf(t, tr.peak_memory_allocated < 4096, "peak memory %d bytes", tr.peak_memory_allocated)
+}
+
+@(test)
+test_parse_patch_rejects_body_lines_past_the_header_count :: proc(t: ^testing.T) {
+	tr: mem.Tracking_Allocator
+	context.allocator = track_begin(&tr)
+	defer expect_no_leaks(t, &tr)
+
+	// The header promises one new line, but the body adds two. Dropping
+	// `+c` silently would give a wrong result.
+	for patch in ([]string{"@@ -1 +1 @@\n-a\n+b\n+c\n", "@@ -1 +1 @@\n-a\n+b\n-c\n", "@@ -1 +1 @@\n-a\n+b\n c\n"}) {
+		result, err := diff.apply("a\n", patch)
+		defer delete(result)
+		testing.expectf(t, err == diff.Patch_Error.Malformed_Hunk_Line, "%q: got %v", patch, err)
+	}
+}
+
+@(test)
+test_parse_patch_accepts_a_format_patch_signature :: proc(t: ^testing.T) {
+	tr: mem.Tracking_Allocator
+	context.allocator = track_begin(&tr)
+	defer expect_no_leaks(t, &tr)
+
+	// git format-patch ends the mail with "-- " and the git version.
+	result, err := diff.apply("a\n", "--- a/f\n+++ b/f\n@@ -1 +1 @@\n-a\n+b\n-- \n2.40.0\n\n")
+	defer delete(result)
+	testing.expect_value(t, err, nil)
+	testing.expect_value(t, result, "b\n")
+}
+
+@(test)
+test_apply_patch_rejects_hand_built_hunks_without_panicking :: proc(t: ^testing.T) {
+	tr: mem.Tracking_Allocator
+	context.allocator = track_begin(&tr)
+	defer expect_no_leaks(t, &tr)
+
+	two := []diff.Patch_Line{{.Equal, "a\n"}, {.Equal, "b\n"}}
+	one := []diff.Patch_Line{{.Equal, "a\n"}}
+	Case :: struct {
+		hunk: diff.Patch_Hunk,
+		want: diff.Patch_Error,
+	}
+	cases := []Case {
+		// The lines read two original lines but the header says one.
+		{{a_start = 0, a_count = 1, b_count = 2, lines = two}, .Malformed_Hunk_Line},
+		{{a_start = 0, a_count = -1, b_count = 1, lines = one}, .Malformed_Hunk_Line},
+		{{a_start = max(int), a_count = 1, b_count = 1, lines = one}, .Hunk_Out_Of_Range},
+		{{a_start = 1, a_count = max(int), b_count = 1, lines = one}, .Malformed_Hunk_Line},
+		{{a_start = -1, a_count = 1, b_count = 1, lines = one}, .Hunk_Out_Of_Order},
+	}
+	for c in cases {
+		p := diff.Patch {
+			hunks = []diff.Patch_Hunk{c.hunk},
+		}
+		result, err := diff.apply_patch("a\n", p)
+		defer delete(result)
+		testing.expectf(t, err == c.want, "%v: got %v, want %v", c.hunk, err, c.want)
+	}
+}
