@@ -71,11 +71,12 @@ Diff_Error :: enum {
 /*
 Error is the compound error type returned by every fallible procedure in this
 package. `nil` means success. Compare it against a specific variant, such as
-`Unified_Error.Negative_Context`, or use a type switch.
+`Patch_Error.Context_Mismatch`, or use a type switch.
 */
 Error :: union #shared_nil {
 	Diff_Error,
 	Unified_Error,
+	Patch_Error,
 	runtime.Allocator_Error,
 }
 
