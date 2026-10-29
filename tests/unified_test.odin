@@ -2,6 +2,7 @@ package diff_tests
 
 import diff ".."
 import "core:mem"
+import "core:strings"
 import "core:testing"
 
 @(test)
@@ -266,4 +267,44 @@ test_unified_from_edits_reuses_a_script :: proc(t: ^testing.T) {
 	testing.expect_value(t, err2, nil)
 	testing.expect_value(t, wide, "--- x\n+++ y\n@@ -1,3 +1,2 @@\n 1\n-2\n 3\n")
 	testing.expect_value(t, narrow, "--- x\n+++ y\n@@ -2 +1,0 @@\n-2\n")
+}
+
+@(test)
+test_unified_with_huge_context_gives_one_hunk :: proc(t: ^testing.T) {
+	tr: mem.Tracking_Allocator
+	context.allocator = track_begin(&tr)
+	defer expect_no_leaks(t, &tr)
+
+	// max(int) means "show the whole file". Doubling it must not overflow
+	// into overlapping hunks that apply refuses.
+	a := "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n"
+	b := "1\nX\n3\n4\n5\n6\n7\n8\nY\n10\n"
+	patch, err := diff.unified(a, b, context_lines = max(int))
+	defer delete(patch)
+	testing.expect_value(t, err, nil)
+	testing.expect_value(t, strings.count(patch, "@@ -"), 1)
+	testing.expect(t, strings.has_prefix(patch, "--- a\n+++ b\n@@ -1,10 +1,10 @@\n"), patch)
+	result, apply_err := diff.apply(a, patch)
+	defer delete(result)
+	testing.expect_value(t, apply_err, nil)
+	testing.expect_value(t, result, b)
+}
+
+@(test)
+test_unified_from_edits_rejects_overflowing_counts :: proc(t: ^testing.T) {
+	tr: mem.Tracking_Allocator
+	context.allocator = track_begin(&tr)
+	defer expect_no_leaks(t, &tr)
+
+	lines := []string{"a\n"}
+	bad := [][]diff.Edit {
+		{{.Delete, 1, 0, max(int)}},
+		{{.Insert, 0, max(int), 1}},
+		{{.Equal, max(int) - 1, 0, 2}},
+	}
+	for edits in bad {
+		patch, err := diff.unified_from_edits(lines, lines, edits)
+		defer delete(patch)
+		testing.expectf(t, err == diff.Unified_Error.Edits_Out_Of_Range, "%v: got %v", edits, err)
+	}
 }

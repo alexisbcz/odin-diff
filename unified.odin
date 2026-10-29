@@ -151,7 +151,9 @@ collect_hunk :: proc(
 	next = first
 	for next < len(edits) {
 		e := edits[next]
-		if e.op == .Equal && (next == len(edits) - 1 || e.count > 2 * context_lines) {
+		// `count - context > context` is `count > 2 * context` without
+		// overflowing when the caller asks for max(int) lines of context.
+		if e.op == .Equal && (next == len(edits) - 1 || e.count - context_lines > context_lines) {
 			break
 		}
 		append(&group, e) or_return
@@ -281,9 +283,11 @@ unified_from_edits :: proc(
 		if e.count < 0 || e.a_start < 0 || e.b_start < 0 {
 			return "", .Edits_Out_Of_Range
 		}
-		a_end := e.a_start + (e.op == .Insert ? 0 : e.count)
-		b_end := e.b_start + (e.op == .Delete ? 0 : e.count)
-		if a_end > len(a_lines) || b_end > len(b_lines) {
+		// Compare against the room left so huge values cannot overflow.
+		a_len := e.op == .Insert ? 0 : e.count
+		b_len := e.op == .Delete ? 0 : e.count
+		if e.a_start > len(a_lines) || a_len > len(a_lines) - e.a_start ||
+		   e.b_start > len(b_lines) || b_len > len(b_lines) - e.b_start {
 			return "", .Edits_Out_Of_Range
 		}
 	}
